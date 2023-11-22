@@ -12,7 +12,6 @@ using Microsoft.AspNetCore.Identity.UI.Services;
 using Microsoft.AspNetCore.Localization;
 using Microsoft.AspNetCore.Mvc.Razor;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.FileProviders;
 using Microsoft.OpenApi.Models;
 using Newtonsoft.Json;
 using Prometheus;
@@ -23,13 +22,14 @@ using System.Reflection;
 var builder = WebApplication.CreateBuilder(args);
 
 var configurationPath = Path.Combine(Environment.CurrentDirectory, "Configuration");
-if (!File.Exists(Path.Combine(configurationPath, "appsettings.json"))) {
+if (!File.Exists(Path.Combine(configurationPath, "appsettings.json")))
+{
     File.Copy(Path.Combine(Environment.CurrentDirectory, "Setup", "appsettings.json"), Path.Combine(configurationPath, "appsettings.json"));
 }
 
 builder.Configuration
     .AddJsonFile(Path.Combine(Environment.CurrentDirectory, "Configuration", "appsettings.json"), optional: false, reloadOnChange: true)
-    .AddJsonFile(Path.Combine(Environment.CurrentDirectory, "Configuration",  $"appsettings.{builder.Environment.EnvironmentName}.json"), optional: true, reloadOnChange: true);
+    .AddJsonFile(Path.Combine(Environment.CurrentDirectory, "Configuration", $"appsettings.{builder.Environment.EnvironmentName}.json"), optional: true, reloadOnChange: true);
 
 // Add services to the container.
 
@@ -94,7 +94,8 @@ builder.Services.AddDefaultIdentity<ApplicationUser>((IdentityOptions options) =
     .AddRoles<IdentityRole<int>>()
     .AddEntityFrameworkStores<ApplicationDbContext>();
 
-builder.Services.AddRouting(o => {
+builder.Services.AddRouting(o =>
+{
     o.LowercaseUrls = true;
 });
 
@@ -131,55 +132,6 @@ if (authenticationConfig.GetValue<bool>("Discord:Enabled"))
         o.ClientSecret = builder.Configuration["Authentication:Discord:ClientSecret"];
         o.Scope.Add("identify");
         o.Scope.Add("email");
-        o.SaveTokens = true;
-    });
-}
-
-// Google Authentication
-if (authenticationConfig.GetValue<bool>("Google:Enabled"))
-{
-    authenticationBuilder.AddGoogle(o =>
-    {
-        o.ClientId = builder.Configuration["Authentication:Google:ClientID"];
-        o.ClientSecret = builder.Configuration["Authentication:Google:ClientSecret"];
-        o.SaveTokens = true;
-    });
-}
-
-// Microsoft Authentication
-if (authenticationConfig.GetValue<bool>("Microsoft:Enabled"))
-{
-    authenticationBuilder.AddMicrosoftAccount(o =>
-    {
-        o.ClientId = builder.Configuration["Authentication:Microsoft:ClientID"];
-        o.ClientSecret = builder.Configuration["Authentication:Microsoft:ClientSecret"];
-        o.SaveTokens = true;
-    });
-}
-
-// Apple Authentication, requires AuthKey
-if (authenticationConfig.GetValue<bool>("Apple:Enabled"))
-{
-    authenticationBuilder.AddApple(o =>
-    {
-        o.ClientId = builder.Configuration["Authentication:Apple:ClientID"];
-        o.KeyId = builder.Configuration["Authentication:Apple:KeyID"];
-        o.TeamId = builder.Configuration["Authentication:Apple:TeamID"];
-        o.SaveTokens = true;
-
-        var provider = new PhysicalFileProvider(Path.Combine(Environment.CurrentDirectory, "Configuration"));
-        o.UsePrivateKey(keyId =>
-             provider.GetFileInfo($"AuthKey_{keyId}.p8")
-        );
-    });
-}
-
-// Steam Authentication (OpenID)
-if (authenticationConfig.GetValue<bool>("Steam:Enabled"))
-{
-    authenticationBuilder.AddSteam(o =>
-    {
-        o.ApplicationKey = builder.Configuration["Authentication:Steam:ApplicationKey"];
         o.SaveTokens = true;
     });
 }
@@ -329,70 +281,69 @@ app.UseSwaggerUI(options =>
 
 app.Logger.LogInformation("Working directory: {directory}", Environment.CurrentDirectory);
 
-using (var scope = app.Services.CreateScope())
+app.Logger.LogInformation("Setting up...");
+using var scope = app.Services.CreateAsyncScope();
+var services = scope.ServiceProvider;
+var context = services.GetRequiredService<ApplicationDbContext>();
+
+//await context.Database.EnsureCreatedAsync();
+
+var roleManager = services.GetRequiredService<RoleManager<IdentityRole<int>>>();
+if (!await roleManager.RoleExistsAsync("Administrator"))
 {
-    app.Logger.LogInformation("Setting up...");
-    var services = scope.ServiceProvider;
-    var context = services.GetRequiredService<ApplicationDbContext>();
-    context.Database.Migrate();
-
-    var roleManager = services.GetRequiredService<RoleManager<IdentityRole<int>>>();
-    if (!await roleManager.RoleExistsAsync("Administrator"))
+    var administratorRole = new IdentityRole<int>("Administrator");
+    var result = await roleManager.CreateAsync(administratorRole);
+    if (!result.Succeeded)
     {
-        var administratorRole = new IdentityRole<int>("Administrator");
-        var result = await roleManager.CreateAsync(administratorRole);
-        if (!result.Succeeded)
+        foreach (var error in result.Errors)
         {
-            foreach (var error in result.Errors)
-            {
-                app.Logger.LogError($"[{error.Code}] {error.Description}");
-            }
+            app.Logger.LogError($"[{error.Code}] {error.Description}");
         }
     }
+}
 
-    if (!await context.Exposures.AnyAsync())
+if (!await context.Exposures.AnyAsync())
+{
+    var exposures = JsonConvert.DeserializeObject<Exposure[]>(
+        await File.ReadAllTextAsync(Path.Combine(Environment.CurrentDirectory, "Setup", "Exposures.json"))
+    );
+
+    if (exposures == null)
     {
-        var exposures = JsonConvert.DeserializeObject<Exposure[]>(
-            await File.ReadAllTextAsync(Path.Combine(Environment.CurrentDirectory, "Setup", "Exposures.json"))
-        );
-
-        if (exposures == null)
-        {
-            app.Logger.LogError("Could not parse Setup/Exposures.json");
-            return;
-        }
-
-        foreach (var exposure in exposures.OrderBy(q => q.Id))
-        {
-            context.Add(exposure);
-        }
-
-        await context.SaveChangesAsync();
-
-        app.Logger.LogInformation("Populated exposures");
+        app.Logger.LogError("Could not parse Setup/Exposures.json");
+        return;
     }
 
-    if (!await context.Syntaxes.AnyAsync())
+    foreach (var exposure in exposures.OrderBy(q => q.Id))
     {
-        var syntaxes = JsonConvert.DeserializeObject<Syntax[]>(
-            await File.ReadAllTextAsync(Path.Combine(Environment.CurrentDirectory, "Setup", "Syntaxes.json"))
-        );
-
-        if (syntaxes == null)
-        {
-            app.Logger.LogError("Could not parse Setup/Syntaxes.json");
-            return;
-        }
-
-        foreach (var syntax in syntaxes)
-        {
-            context.Add(syntax);
-        }
-
-        await context.SaveChangesAsync();
-
-        app.Logger.LogInformation("Populated syntaxes");
+        context.Add(exposure);
     }
+
+    await context.SaveChangesAsync();
+
+    app.Logger.LogInformation("Populated exposures");
+}
+
+if (!await context.Syntaxes.AnyAsync())
+{
+    var syntaxes = JsonConvert.DeserializeObject<Syntax[]>(
+        await File.ReadAllTextAsync(Path.Combine(Environment.CurrentDirectory, "Setup", "Syntaxes.json"))
+    );
+
+    if (syntaxes == null)
+    {
+        app.Logger.LogError("Could not parse Setup/Syntaxes.json");
+        return;
+    }
+
+    foreach (var syntax in syntaxes)
+    {
+        context.Add(syntax);
+    }
+
+    await context.SaveChangesAsync();
+
+    app.Logger.LogInformation("Populated syntaxes");
 }
 
 app.Run();
